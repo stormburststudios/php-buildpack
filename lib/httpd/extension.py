@@ -26,7 +26,10 @@ def service_commands(ctx):
             '$HOME/httpd/bin/apachectl',
             '-f "$HOME/httpd/conf/httpd.conf"',
             '-k start',
-            '-DFOREGROUND')
+            '-DFOREGROUND'),
+        'artisan': (
+            '$HOME/htdocs/artisan',
+            'queue:listen')
     }
 
 
