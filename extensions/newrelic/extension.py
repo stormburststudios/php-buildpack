@@ -159,12 +159,7 @@ def preprocess_commands(ctx):
 
 
 def service_commands(ctx):
-    return {
-        'artisan': (
-            'php',
-            '$HOME/htdocs/artisan',
-            'queue:listen')
-    }
+    return {}
 
 
 def service_environment(ctx):
