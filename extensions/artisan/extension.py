@@ -28,7 +28,7 @@ def service_commands(ctx):
             'php',
             '$HOME/htdocs/artisan',
             'queue:listen',
-            '--sleep=60')
+            '--sleep=30')
     }
 
 
