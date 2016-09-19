@@ -9,7 +9,7 @@ describe 'CF PHP Buildpack' do
     Machete::CF::DeleteApp.new.execute(app)
   end
 
-  context 'deploying a Cake application with local dependencies', if: Machete::BuildpackMode.cached? do
+  context 'deploying a Cake application with local dependencies', :cached do
     let(:app_name) { 'cake_with_local_dependencies' }
     let(:options) do
       {
@@ -27,11 +27,11 @@ describe 'CF PHP Buildpack' do
       browser.visit_path('/users/add')
       expect(browser).to have_body('Add New User')
 
-      expect(app.host).not_to have_internet_traffic
+      expect(app).not_to have_internet_traffic
     end
   end
 
-  context 'deploying a Cake application with remote dependencies', if: Machete::BuildpackMode.uncached? do
+  context 'deploying a Cake application with remote dependencies', :uncached do
     let(:app_name) { 'cake_with_remote_dependencies' }
     let(:options) do
       {

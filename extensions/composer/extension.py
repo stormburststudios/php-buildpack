@@ -27,32 +27,47 @@ from build_pack_utils import utils
 from build_pack_utils import stream_output
 from extension_helpers import ExtensionHelper
 
+from build_pack_utils.compile_extensions import CompileExtensions
+
 
 _log = logging.getLogger('composer')
 
 
-def find_composer_paths(path):
+def find_composer_paths(ctx):
+    build_dir = ctx['BUILD_DIR']
+    webdir = ctx['WEBDIR']
+
     json_path = None
     lock_path = None
-    for root, dirs, files in os.walk(path):
-        files.sort()
+    json_paths = [
+        os.path.join(build_dir, 'composer.json'),
+        os.path.join(build_dir, webdir, 'composer.json')
+    ]
 
-        if 'vendor' in dirs:
-            dirs.remove('vendor')
+    lock_paths = [
+        os.path.join(build_dir, 'composer.lock'),
+        os.path.join(build_dir, webdir, 'composer.lock')
+    ]
 
-        contains_json = 'composer.json' in files
-        contains_lock = 'composer.lock' in files
+    env_path = os.getenv('COMPOSER_PATH')
+    if env_path is not None:
+        json_paths = json_paths + [
+            os.path.join(build_dir, env_path, 'composer.json'),
+            os.path.join(build_dir, webdir, env_path, 'composer.json')
+        ]
 
-        if contains_json and contains_lock:
-            json_path = os.path.join(root, 'composer.json')
-            lock_path = os.path.join(root, 'composer.lock')
-            return (json_path, lock_path)
-        elif contains_json:
-            json_path = os.path.join(root, 'composer.json')
-            lock_path = None
-        elif contains_lock:
-            lock_path = os.path.join(root, 'composer.lock')
-            json_path = None
+        lock_paths = lock_paths + [
+            os.path.join(build_dir, env_path, 'composer.lock'),
+            os.path.join(build_dir, webdir, env_path, 'composer.lock')
+        ]
+
+    for path in json_paths:
+        if os.path.exists(path):
+            json_path = path
+    for path in lock_paths:
+        if os.path.exists(path):
+            lock_path = path
+
     return (json_path, lock_path)
 
 
@@ -64,7 +79,7 @@ class ComposerConfiguration(object):
 
     def _init_composer_paths(self):
         (self.json_path, self.lock_path) = \
-            find_composer_paths(self._ctx['BUILD_DIR'])
+            find_composer_paths(self._ctx)
 
     def read_exts_from_path(self, path):
         exts = []
@@ -78,44 +93,37 @@ class ComposerConfiguration(object):
                     exts.append(ext_match.group(1))
         return exts
 
-    def read_version_from_composer_json(self, key):
-        composer_json = json.load(open(self.json_path, 'r'))
-        require = composer_json.get('require', {})
-        return require.get(key, None)
-
-    def read_version_from_composer_lock(self, key):
-        composer_json = json.load(open(self.lock_path, 'r'))
-        platform = composer_json.get('platform', {})
-        return platform.get(key, None)
-
     def pick_php_version(self, requested):
         selected = None
         if requested is None:
             selected = self._ctx['PHP_VERSION']
-        elif requested == '5.3.*' or requested == '>=5.3':
-            selected = self._ctx['PHP_54_LATEST']
-        elif requested == '5.4.*' or requested == '>=5.4':
-            selected = self._ctx['PHP_54_LATEST']
         elif requested == '5.5.*' or requested == '>=5.5':
             selected = self._ctx['PHP_55_LATEST']
         elif requested == '5.6.*' or requested == '>=5.6':
             selected = self._ctx['PHP_56_LATEST']
-        elif requested.startswith('5.4.'):
-            selected = requested
+        elif requested == '7.0.*' or requested == '>=7.0':
+            selected = self._ctx['PHP_70_LATEST']
         elif requested.startswith('5.5.'):
             selected = requested
         elif requested.startswith('5.6.'):
+            selected = requested
+        elif requested.startswith('7.0.'):
             selected = requested
         else:
             selected = self._ctx['PHP_VERSION']
         return selected
 
-    def _read_version_from_composer(self, key):
-        if self.json_path:
-            return self.read_version_from_composer_json(key)
-
-        elif self.lock_path:
-            return self.read_version_from_composer_lock(key)
+    def read_version_from_composer(self, key):
+        (json_path, lock_path) = find_composer_paths(self._ctx)
+        if json_path is not None:
+            composer = json.load(open(json_path, 'r'))
+            require = composer.get('require', {})
+            return require.get(key, None)
+        if lock_path is not None:
+            composer = json.load(open(lock_path, 'r'))
+            platform = composer.get('platform', {})
+            return platform.get(key, None)
+        return None
 
     def configure(self):
         if self.json_path or self.lock_path:
@@ -127,20 +135,15 @@ class ComposerConfiguration(object):
             # add platform extensions from composer.json & composer.lock
             exts.extend(self.read_exts_from_path(self.json_path))
             exts.extend(self.read_exts_from_path(self.lock_path))
-            hhvm_version = self._read_version_from_composer('hhvm')
-            if hhvm_version:
-                self._ctx['PHP_VM'] = 'hhvm'
-                self._log.debug('Composer picked HHVM Version [%s]',
-                                hhvm_version)
-            else:
-                # update context with new list of extensions,
-                # if composer.json exists
-                php_version = self._read_version_from_composer('php')
-                self._log.debug('Composer picked PHP Version [%s]',
-                                php_version)
-                self._ctx['PHP_VERSION'] = self.pick_php_version(php_version)
-                self._ctx['PHP_EXTENSIONS'] = utils.unique(exts)
-                self._ctx['PHP_VM'] = 'php'
+
+            # update context with new list of extensions,
+            # if composer.json exists
+            php_version = self.read_version_from_composer('php')
+            self._log.debug('Composer picked PHP Version [%s]',
+                            php_version)
+            self._ctx['PHP_VERSION'] = self.pick_php_version(php_version)
+            self._ctx['PHP_EXTENSIONS'] = utils.unique(exts)
+            self._ctx['PHP_VM'] = 'php'
 
 
 class ComposerExtension(ExtensionHelper):
@@ -149,10 +152,15 @@ class ComposerExtension(ExtensionHelper):
         self._log = _log
 
     def _defaults(self):
+        manifest_file_path = os.path.join(self._ctx["BP_DIR"], "manifest.yml")
+
+        compile_ext = CompileExtensions(self._ctx["BP_DIR"])
+        _, default_version = compile_ext.default_version_for(manifest_file_path=manifest_file_path, dependency="composer")
+
         return {
-            'COMPOSER_VERSION': '1.0.0-alpha10',
+            'COMPOSER_VERSION': default_version,
             'COMPOSER_PACKAGE': 'composer.phar',
-            'COMPOSER_DOWNLOAD_URL': '{DOWNLOAD_URL}/composer/'
+            'COMPOSER_DOWNLOAD_URL': '/composer/'
                                      '{COMPOSER_VERSION}/{COMPOSER_PACKAGE}',
             'COMPOSER_INSTALL_OPTIONS': ['--no-interaction', '--no-dev'],
             'COMPOSER_VENDOR_DIR': '{BUILD_DIR}/{LIBDIR}/vendor',
@@ -162,7 +170,7 @@ class ComposerExtension(ExtensionHelper):
 
     def _should_compile(self):
         (json_path, lock_path) = \
-            find_composer_paths(self._ctx['BUILD_DIR'])
+            find_composer_paths(self._ctx)
         return (json_path is not None or lock_path is not None)
 
     def _compile(self, install):
@@ -263,24 +271,27 @@ class ComposerExtension(ExtensionHelper):
     def check_github_rate_exceeded(self, token_is_valid):
         if self._github_rate_exceeded(token_is_valid):
             print('-----> The GitHub api rate limit has been exceeded. '
-                  'Composer will continue by downloading from source, which might result in slower downloads. ' 
+                  'Composer will continue by downloading from source, which might result in slower downloads. '
                   'You can increase your rate limit with a GitHub OAuth token. '
                   'Please obtain a GitHub OAuth token by registering your application at '
                   'https://github.com/settings/applications/new. '
                   'Then set COMPOSER_GITHUB_OAUTH_TOKEN in your environment to the value of this token.')
 
     def run(self):
-        # Move composer files out of WEBDIR
-        (self._builder.move()
-            .under('{BUILD_DIR}/{WEBDIR}')
-            .where_name_is('composer.json')
-            .into('BUILD_DIR')
-         .done())
-        (self._builder.move()
-            .under('{BUILD_DIR}/{WEBDIR}')
-            .where_name_is('composer.lock')
-            .into('BUILD_DIR')
-         .done())
+        # Move composer files into root directory
+        (json_path, lock_path) = find_composer_paths(self._ctx)
+        if json_path is not None and os.path.dirname(json_path) != self._ctx['BUILD_DIR']:
+            (self._builder.move()
+                .under(os.path.dirname(json_path))
+                .where_name_is('composer.json')
+                .into('BUILD_DIR')
+             .done())
+        if lock_path is not None and os.path.dirname(lock_path) != self._ctx['BUILD_DIR']:
+            (self._builder.move()
+                .under(os.path.dirname(lock_path))
+                .where_name_is('composer.lock')
+                .into('BUILD_DIR')
+             .done())
         # Sanity Checks
         if not os.path.exists(os.path.join(self._ctx['BUILD_DIR'],
                                            'composer.lock')):
@@ -309,8 +320,7 @@ class ComposerCommandRunner(object):
     def __init__(self, ctx, builder):
         self._log = _log
         self._ctx = ctx
-        self._strategy = HHVMComposerStrategy(ctx) \
-            if ctx['PHP_VM'] == 'hhvm' else PHPComposerStrategy(ctx)
+        self._strategy = PHPComposerStrategy(ctx)
         self._php_path = self._strategy.binary_path()
         self._composer_path = os.path.join(ctx['BUILD_DIR'], 'php',
                                            'bin', 'composer.phar')
@@ -351,22 +361,6 @@ class ComposerCommandRunner(object):
         except:
             print "-----> Composer command failed"
             raise
-
-
-class HHVMComposerStrategy(object):
-    def __init__(self, ctx):
-        self._ctx = ctx
-
-    def binary_path(self):
-        return os.path.join(
-            self._ctx['BUILD_DIR'], 'hhvm', 'usr', 'bin', 'hhvm')
-
-    def write_config(self, builder):
-        pass
-
-    def ld_library_path(self):
-        return os.path.join(
-            self._ctx['BUILD_DIR'], 'hhvm', 'usr', 'lib', 'hhvm')
 
 
 class PHPComposerStrategy(object):

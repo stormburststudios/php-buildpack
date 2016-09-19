@@ -1,6 +1,7 @@
 import os
 import tempfile
 import shutil
+import re
 from nose.tools import eq_
 from dingus import Dingus
 from dingus import patch
@@ -16,10 +17,11 @@ class TestComposer(object):
     def setUp(self):
         os.environ['COMPOSER_GITHUB_OAUTH_TOKEN'] = ""
         assert(os.getenv('COMPOSER_GITHUB_OAUTH_TOKEN') == "")
+        self.buildpack_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 
     def test_composer_tool_should_compile(self):
         ctx = utils.FormattedDict({
-            'DOWNLOAD_URL': 'http://server/bins',
+            'BP_DIR': '',
             'BUILD_DIR': 'tests/data/composer',
             'CACHE_DIR': '/cache/dir',
             'PHP_VM': 'will_default_to_php_strategy',
@@ -31,7 +33,7 @@ class TestComposer(object):
 
     def test_composer_tool_should_compile_not_found(self):
         ctx = utils.FormattedDict({
-            'DOWNLOAD_URL': 'http://server/bins',
+            'BP_DIR': '',
             'BUILD_DIR': 'lib',
             'CACHE_DIR': '/cache/dir',
             'PHP_VM': 'will_default_to_php_strategy',
@@ -41,12 +43,24 @@ class TestComposer(object):
         ct = self.extension_module.ComposerExtension(ctx)
         assert not ct._should_compile()
 
-    def test_composer_tool_install(self):
+    def test_composer_tool_uses_default_version_for(self):
         ctx = utils.FormattedDict({
-            'DOWNLOAD_URL': 'http://server/bins',
+            'BP_DIR': os.path.join(self.buildpack_dir, 'tests/data/composer-default-versions/'),
             'PHP_VM': 'will_default_to_php_strategy',
             'BUILD_DIR': '/build/dir',
-            'CACHE_DIR': '/cache/dir'
+            'CACHE_DIR': '/cache/dir',
+            'WEBDIR': ''
+        })
+        ct = self.extension_module.ComposerExtension(ctx)
+        assert ct._ctx['COMPOSER_VERSION'] == '9.9.9'
+
+    def test_composer_tool_install(self):
+        ctx = utils.FormattedDict({
+            'BP_DIR': '',
+            'PHP_VM': 'will_default_to_php_strategy',
+            'BUILD_DIR': '/build/dir',
+            'CACHE_DIR': '/cache/dir',
+            'WEBDIR': ''
         })
         builder = Dingus(_ctx=ctx)
         installer = Dingus()
@@ -65,18 +79,17 @@ class TestComposer(object):
         assert installer.calls().once()
         # make sure composer is installed
         assert installer._installer.calls().once()
-        assert installer._installer.calls()[0].args[0] == \
-            'http://server/bins/composer/1.0.0-alpha10/composer.phar', \
+        assert re.match('/composer/[\d\.]+/composer.phar', installer._installer.calls()[0].args[0]), \
             "was %s" % installer._installer.calls()[0].args[0]
 
     def test_composer_tool_install_latest(self):
         ctx = utils.FormattedDict({
-            'DOWNLOAD_URL': 'http://server/bins',
             'PHP_VM': 'will_default_to_php_strategy',
             'BUILD_DIR': '/build/dir',
             'CACHE_DIR': '/cache/dir',
             'COMPOSER_VERSION': 'latest',
-            'BP_DIR': ''
+            'BP_DIR': '',
+            'WEBDIR': ''
         })
         builder = Dingus(_ctx=ctx)
         installer = Dingus()
@@ -99,90 +112,9 @@ class TestComposer(object):
             'https://getcomposer.org/composer.phar', \
             "was %s" % installer._installer.calls()[0].args[0]
 
-    def test_composer_run_streams_output(self):
-        ctx = utils.FormattedDict({
-            'PHP_VM': 'hhvm',  # PHP strategy does other stuff
-            'DOWNLOAD_URL': 'http://server/bins',
-            'BUILD_DIR': '/build/dir',
-            'CACHE_DIR': '/cache/dir',
-            'TMPDIR': tempfile.gettempdir(),
-            'WEBDIR': 'htdocs',
-            'LIBDIR': 'lib',
-            'BP_DIR': ''
-        })
-
-        instance_stub = Dingus()
-        instance_stub._set_return_value("""{"rate": {"limit": 60, "remaining": 60}}""")
-
-        stream_output_stub = Dingus()
-
-        builder = Dingus(_ctx=ctx)
-
-        with patches({
-            'StringIO.StringIO.getvalue': instance_stub,
-            'composer.extension.stream_output': stream_output_stub
-        }):
-            ct = self.extension_module.ComposerExtension(ctx)
-            ct._builder = builder
-            ct.composer_runner = \
-                    self.extension_module.ComposerCommandRunner(ctx, builder)
-            ct.run()
-            stream_output_calls = stream_output_stub.calls()
-            assert 2 == len(stream_output_calls), \
-                    "The number of stream_output calls returned %s, expected 2" % len(stream_output_stub.calls())
-            instCmd = stream_output_calls[-1].args[1]
-            assert instCmd.find('/build/dir/php/bin/composer.phar') > 0
-            assert instCmd.find('install') > 0
-            assert instCmd.find('--no-progress') > 0
-            assert instCmd.find('--no-interaction') > 0
-            assert instCmd.find('--no-dev') > 0
-
-    def test_composer_run_streams_debug_output(self):
-        ctx = utils.FormattedDict({
-            'PHP_VM': 'hhvm',  # PHP strategy does other stuff
-            'DOWNLOAD_URL': 'http://server/bins',
-            'BUILD_DIR': '/build/dir',
-            'CACHE_DIR': '/cache/dir',
-            'TMPDIR': tempfile.gettempdir(),
-            'WEBDIR': 'htdocs',
-            'LIBDIR': 'lib',
-            'BP_DEBUG': 'True',
-            'BP_DIR': ''
-        })
-
-        instance_stub = Dingus(return_value="""{"rate": {"limit": 60, "remaining": 60}}""")
-
-        stream_output_stub = Dingus()
-
-        builder = Dingus(_ctx=ctx)
-
-        with patches({
-            'StringIO.StringIO.getvalue': instance_stub,
-            'composer.extension.stream_output': stream_output_stub
-        }):
-            ct = self.extension_module.ComposerExtension(ctx)
-            ct._builder = builder
-            ct.composer_runner = \
-                self.extension_module.ComposerCommandRunner(ctx, builder)
-            ct.run()
-            stream_output_calls = stream_output_stub.calls()
-            assert 3 == len(stream_output_calls), \
-                "The number of stream_output calls returned %s, expected 3" % len(stream_output_stub.calls())
-            # first is called `composer -V`
-            verCmd = stream_output_calls[0].args[1]
-            assert verCmd.find('composer.phar -V')
-            # then composer install
-            instCmd = stream_output_calls[-1].args[1]
-            assert instCmd.find('/build/dir/php/bin/composer.phar') > 0
-            assert instCmd.find('install') > 0
-            assert instCmd.find('--no-progress') > 0
-            assert instCmd.find('--no-interaction') > 0
-            assert instCmd.find('--no-dev') > 0
-
     def test_composer_tool_run_custom_composer_opts(self):
         ctx = utils.FormattedDict({
             'PHP_VM': 'php',
-            'DOWNLOAD_URL': 'http://server/bins',
             'BUILD_DIR': '/build/dir',
             'CACHE_DIR': '/cache/dir',
             'TMPDIR': tempfile.gettempdir(),
@@ -211,7 +143,6 @@ class TestComposer(object):
             ct.composer_runner = \
                 self.extension_module.ComposerCommandRunner(ctx, builder)
             ct.run()
-            eq_(2, len(builder.move.calls()))
             eq_(1, len(builder.copy.calls()))
             assert rewrite_stub.calls().once()
             rewrite_args = rewrite_stub.calls()[0].args
@@ -224,9 +155,9 @@ class TestComposer(object):
     def test_composer_tool_run_sanity_checks(self):
         ctx = utils.FormattedDict({
             'PHP_VM': 'php',
-            'DOWNLOAD_URL': 'http://server/bins',
             'BUILD_DIR': '/build/dir',
             'CACHE_DIR': '/cache/dir',
+            'WEBDIR': '',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'BP_DIR': ''
@@ -240,7 +171,7 @@ class TestComposer(object):
         rewrite_stub = Dingus()
 
         builder = Dingus(_ctx=ctx)
-        
+
         exists_stub = Dingus()
 
         with patches({
@@ -264,31 +195,37 @@ class TestComposer(object):
             with patch('os.path.exists', exists_stub):
                 composer_extension._log = Dingus()
                 composer_extension.run()
-            assert len(exists_stub.calls()) == 2
             assert len(composer_extension._log.warning.calls()) == 0
 
     def test_process_commands(self):
         eq_(0, len(self.extension_module.preprocess_commands({
+            'BP_DIR': '',
             'BUILD_DIR': '',
+            'WEBDIR': '',
             'PHP_VM': ''
             })))
 
     def test_service_commands(self):
         eq_(0, len(self.extension_module.service_commands({
+            'BP_DIR': '',
             'BUILD_DIR': '',
+            'WEBDIR': '',
             'PHP_VM': ''
             })))
 
     def test_service_environment(self):
         eq_(0, len(self.extension_module.service_environment({
+            'BP_DIR': '',
             'BUILD_DIR': '',
+            'WEBDIR': '',
             'PHP_VM': ''
             })))
 
     def test_configure_composer_with_php_version(self):
         ctx = utils.FormattedDict({
             'BUILD_DIR': 'tests/data/composer',
-            'PHP_54_LATEST': '5.4.31'
+            'WEBDIR': '',
+            'PHP_55_LATEST': '5.5.31'
         })
         config = self.extension_module.ComposerConfiguration(ctx)
         config.configure()
@@ -299,14 +236,15 @@ class TestComposer(object):
         assert 'zip' == ctx['PHP_EXTENSIONS'][1]
         assert 'fileinfo' == ctx['PHP_EXTENSIONS'][2]
         assert 'gd' == ctx['PHP_EXTENSIONS'][3]
-        assert '5.4.31' == ctx['PHP_VERSION']
+        assert '5.5.31' == ctx['PHP_VERSION']
         assert 'php' == ctx['PHP_VM']
 
     def test_configure_composer_with_php_version_and_base_extensions(self):
         ctx = utils.FormattedDict({
             'BUILD_DIR': 'tests/data/composer',
+            'WEBDIR': '',
             'PHP_EXTENSIONS': ['a', 'b'],
-            'PHP_54_LATEST': '5.4.31'
+            'PHP_55_LATEST': '5.5.31'
         })
         config = self.extension_module.ComposerConfiguration(ctx)
         config.configure()
@@ -319,12 +257,13 @@ class TestComposer(object):
         assert 'zip' == ctx['PHP_EXTENSIONS'][3]
         assert 'fileinfo' == ctx['PHP_EXTENSIONS'][4]
         assert 'gd' == ctx['PHP_EXTENSIONS'][5]
-        assert '5.4.31' == ctx['PHP_VERSION']
+        assert '5.5.31' == ctx['PHP_VERSION']
         assert 'php' == ctx['PHP_VM']
 
     def test_configure_composer_without_php_version(self):
         ctx = utils.FormattedDict({
             'BUILD_DIR': 'tests/data/composer-no-php',
+            'WEBDIR': '',
             'PHP_VERSION': '5.4.31'  # uses bp default
         })
         config = self.extension_module.ComposerConfiguration(ctx)
@@ -338,19 +277,10 @@ class TestComposer(object):
         assert 'zip' == ctx['PHP_EXTENSIONS'][1]
         assert 'fileinfo' == ctx['PHP_EXTENSIONS'][2]
 
-    def test_configure_composer_with_hhvm_version(self):
-        ctx = utils.FormattedDict({
-            'BUILD_DIR': 'tests/data/composer-with-hhvm',
-            'HHVM_VERSION': '3.2.0'
-        })
-        config = self.extension_module.ComposerConfiguration(ctx)
-        config.configure()
-        assert '3.2.0' == ctx['HHVM_VERSION']
-        assert 'hhvm' == ctx['PHP_VM']
-
     def test_configure_does_not_run_when_no_composer_json(self):
         ctx = utils.FormattedDict({
             'BUILD_DIR': 'tests/data/app-1',
+            'WEBDIR': '',
             'PHP_EXTENSIONS': ['a', 'b']
         })
         config = self.extension_module.ComposerConfiguration(ctx)
@@ -375,7 +305,8 @@ class TestComposer(object):
             return (None, None)
         ctx = utils.FormattedDict({
             'BUILD_DIR': 'tests/data/composer',
-            'PHP_54_LATEST': '5.4.31'
+            'WEBDIR': '',
+            'PHP_55_LATEST': '5.5.31'
         })
         fcp_orig = self.extension_module.find_composer_paths
         # test when no composer.json or composer.lock files found
@@ -409,76 +340,24 @@ class TestComposer(object):
         finally:
             self.extension_module.find_composer_paths = fcp_orig
 
-    """returns the path of the folder that has both composer.json and composer.lock in the same path while transversing a root path"""
-    def test_prioritize_path_with_both_composer_json_and_lock_file(self):
-        (json_path, lock_path) = \
-            self.extension_module.find_composer_paths('tests')
-        eq_('tests/data/composer/composer.json', json_path)
-        eq_('tests/data/composer/composer.lock', lock_path)
-
-    """returns both composer.json and composer.lock when specified a directory that contains them"""
-    def test_find_paths_for_both_composer_json_and_lockfile_in_same_directory(self):
-        (json_path, lock_path) = \
-            self.extension_module.find_composer_paths('tests/data/composer')
-        eq_('tests/data/composer/composer.json', json_path)
-        eq_('tests/data/composer/composer.lock', lock_path)
-    
-    def test_find_path_only_for_composer_json(self):
-        (json_path, lock_path) = \
-            self.extension_module.find_composer_paths('tests/data/composer-no-php')
-        assert json_path is not None
-        eq_('tests/data/composer-no-php/composer.json', json_path)
-
-    def test_find_path_only_for_composer_json(self):
-        (json_path, lock_path) = \
-            self.extension_module.find_composer_paths('tests/data/composer-lock')
-        assert json_path is None
-        eq_('tests/data/composer-lock/composer.lock', lock_path)
-
-    def test_find_composer_paths_not_in_vendor(self):
-        tmpdir = None
-        try:
-            tmpdir = tempfile.mkdtemp(prefix="test_composer-")
-            vendor = os.path.join(tmpdir, 'vendor')
-            utils.safe_makedirs(vendor)
-            with open(os.path.join(vendor, 'composer.json'), 'wt') as fp:
-                fp.write("{}")
-            (json_path, lock_path) = \
-                self.extension_module.find_composer_paths(tmpdir)
-            assert json_path is None, "Found [%s]" % json_path
-            assert lock_path is None, "Found [%s]" % lock_path
-        finally:
-            shutil.rmtree(tmpdir)
-
     def test_find_composer_php_version(self):
-        ctx = {'BUILD_DIR': 'tests'}
+        ctx = {'BUILD_DIR': 'tests/data/composer-lock', 'WEBDIR': ''}
         config = self.extension_module.ComposerConfiguration(ctx)
-        php_version = config.read_version_from_composer_json('php')
-        eq_('>=5.3', php_version)
-        # check lock file
-        php_version = config.read_version_from_composer_lock('php')
+        php_version = config.read_version_from_composer('php')
         eq_('>=5.3', php_version)
 
     def test_pick_php_version(self):
         ctx = {
-            'PHP_VERSION': '5.4.31',
-            'PHP_54_LATEST': '5.4.31',
+            'PHP_VERSION': '5.5.15',
             'BUILD_DIR': '',
             'PHP_55_LATEST': '5.5.15',
-            'PHP_56_LATEST': '5.6.7'
+            'PHP_56_LATEST': '5.6.7',
+            'PHP_70_LATEST': '7.0.100',
+            'WEBDIR': ''
         }
         pick_php_version = \
             self.extension_module.ComposerConfiguration(ctx).pick_php_version
         # no PHP 5.3, default to 5.4
-        eq_('5.4.31', pick_php_version('>=5.3'))
-        eq_('5.4.31', pick_php_version('5.3.*'))
-        # latest PHP 5.4 version
-        eq_('5.4.31', pick_php_version('>=5.4'))
-        eq_('5.4.31', pick_php_version('5.4.*'))
-        # extact PHP 5.4 versions
-        eq_('5.4.31', pick_php_version('5.4.31'))
-        eq_('5.4.30', pick_php_version('5.4.30'))
-        eq_('5.4.29', pick_php_version('5.4.29'))
         # latest PHP 5.5 version
         eq_('5.5.15', pick_php_version('>=5.5'))
         eq_('5.5.15', pick_php_version('5.5.*'))
@@ -491,16 +370,23 @@ class TestComposer(object):
         # exact PHP 5.6 versions
         eq_('5.6.7', pick_php_version('5.6.7'))
         eq_('5.6.6', pick_php_version('5.6.6'))
+        # latest PHP 7.0 version
+        eq_('7.0.100', pick_php_version('>=7.0'))
+        eq_('7.0.100', pick_php_version('7.0.*'))
+        # exact PHP 7.0 versions
+        eq_('7.0.1', pick_php_version('7.0.1'))
+        eq_('7.0.2', pick_php_version('7.0.2'))
         # not understood, should default to PHP_VERSION
-        eq_('5.4.31', pick_php_version(''))
-        eq_('5.4.31', pick_php_version(None))
-        eq_('5.4.31', pick_php_version('5.61.1'))
-        eq_('5.4.31', pick_php_version('<5.5'))
-        eq_('5.4.31', pick_php_version('<5.4'))
+        eq_('5.5.15', pick_php_version(''))
+        eq_('5.5.15', pick_php_version(None))
+        eq_('5.5.15', pick_php_version('5.61.1'))
+        eq_('5.5.15', pick_php_version('<5.5'))
+        eq_('5.5.15', pick_php_version('<5.4'))
 
     def test_empty_platform_section(self):
         exts = self.extension_module.ComposerConfiguration({
-            'BUILD_DIR': ''
+            'BUILD_DIR': '',
+            'WEBDIR': ''
         }).read_exts_from_path(
             'tests/data/composer/composer-phalcon.lock')
         eq_(2, len(exts))
@@ -509,13 +395,15 @@ class TestComposer(object):
 
     def test_none_for_extension_reading(self):
         exts = self.extension_module.ComposerConfiguration({
-            'BUILD_DIR': ''
+            'BUILD_DIR': '',
+            'WEBDIR': ''
         }).read_exts_from_path(None)
         eq_(0, len(exts))
 
     def test_with_extensions(self):
         exts = self.extension_module.ComposerConfiguration({
-            'BUILD_DIR': ''
+            'BUILD_DIR': '',
+            'WEBDIR': ''
         }).read_exts_from_path(
             'tests/data/composer/composer.json')
         eq_(2, len(exts))
@@ -524,7 +412,8 @@ class TestComposer(object):
 
     def test_with_oddly_formatted_composer_file(self):
         exts = self.extension_module.ComposerConfiguration({
-            'BUILD_DIR': ''
+            'BUILD_DIR': '',
+            'WEBDIR': ''
         }).read_exts_from_path(
             'tests/data/composer/composer-format.json')
         eq_(1, len(exts))
@@ -532,10 +421,12 @@ class TestComposer(object):
 
     def test_composer_defaults(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/tmp/build',
             'CACHE_DIR': '/tmp/cache',
             'PHP_VM': 'will_default_to_php_strategy',
-            'LIBDIR': 'lib'
+            'LIBDIR': 'lib',
+            'WEBDIR': ''
         })
         ct = self.extension_module.ComposerExtension(ctx)
         eq_('/tmp/build/lib/vendor', ct._ctx['COMPOSER_VENDOR_DIR'])
@@ -544,31 +435,25 @@ class TestComposer(object):
 
     def test_composer_custom_values(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/tmp/build',
             'CACHE_DIR': '/tmp/cache',
             'LIBDIR': 'lib',
             'COMPOSER_VENDOR_DIR': '{BUILD_DIR}/vendor',
             'COMPOSER_BIN_DIR': '{BUILD_DIR}/bin',
             'PHP_VM': 'will_default_to_php_strategy',
-            'COMPOSER_CACHE_DIR': '{CACHE_DIR}/custom'
+            'COMPOSER_CACHE_DIR': '{CACHE_DIR}/custom',
+            'WEBDIR': ''
         })
         ct = self.extension_module.ComposerExtension(ctx)
         eq_('/tmp/build/vendor', ct._ctx['COMPOSER_VENDOR_DIR'])
         eq_('/tmp/build/bin', ct._ctx['COMPOSER_BIN_DIR'])
         eq_('/tmp/cache/custom', ct._ctx['COMPOSER_CACHE_DIR'])
 
-    def test_binary_path_for_hhvm(self):
-        ctx = utils.FormattedDict({
-            'BUILD_DIR': '/usr/awesome/',
-            'PHP_VM': 'hhvm'
-        })
-        stg = self.extension_module.HHVMComposerStrategy(ctx)
-        path = stg.binary_path()
-        eq_('/usr/awesome/hhvm/usr/bin/hhvm', path)
-
     def test_binary_path_for_php(self):
         ctx = utils.FormattedDict({
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php'
         })
         stg = self.extension_module.PHPComposerStrategy(ctx)
@@ -577,7 +462,9 @@ class TestComposer(object):
 
     def test_build_composer_environment_inherits_from_ctx(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHPRC': '/usr/awesome/phpini',
             'PHP_VM': 'php',
             'TMPDIR': 'tmp',
@@ -608,7 +495,9 @@ class TestComposer(object):
 
     def test_build_composer_environment_sets_composer_env_vars(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/tmp/build',
+            'WEBDIR': '',
             'CACHE_DIR': '/tmp/cache',
             'LIBDIR': 'lib',
             'TMPDIR': '/tmp',
@@ -635,7 +524,9 @@ class TestComposer(object):
 
     def test_build_composer_environment_forbids_overwriting_key_vars(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php',
             'TMPDIR': 'tmp',
             'LIBDIR': 'lib',
@@ -658,7 +549,9 @@ class TestComposer(object):
 
     def test_build_composer_environment_converts_vars_to_str(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php',
             'TMPDIR': 'tmp',
             'LIBDIR': 'lib',
@@ -685,7 +578,9 @@ class TestComposer(object):
     def test_build_composer_environment_has_missing_key(self):
         os.environ['SOME_KEY'] = 'does not matter'
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php',
             'TMPDIR': 'tmp',
             'LIBDIR': 'lib',
@@ -712,7 +607,9 @@ class TestComposer(object):
 
     def test_build_composer_environment_no_path(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php',
             'TMPDIR': 'tmp',
             'LIBDIR': 'lib',
@@ -736,7 +633,9 @@ class TestComposer(object):
 
     def test_build_composer_environment_existing_path(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php',
             'TMPDIR': 'tmp',
             'LIBDIR': 'lib',
@@ -759,18 +658,10 @@ class TestComposer(object):
             "PATH should contain path to PHP, found [%s]" \
             % built_environment['PATH']
 
-    def test_ld_library_path_for_hhvm(self):
-        ctx = utils.FormattedDict({
-            'BUILD_DIR': '/usr/awesome/',
-            'PHP_VM': 'hhvm'
-        })
-        stg = self.extension_module.HHVMComposerStrategy(ctx)
-        path = stg.ld_library_path()
-        eq_('/usr/awesome/hhvm/usr/lib/hhvm', path)
-
     def test_ld_library_path_for_php(self):
         ctx = utils.FormattedDict({
             'BUILD_DIR': '/usr/awesome',
+            'WEBDIR': '',
             'PHP_VM': 'php'
         })
         stg = self.extension_module.PHPComposerStrategy(ctx)
@@ -779,14 +670,14 @@ class TestComposer(object):
 
     def test_run_sets_github_oauth_token_if_present(self):
         ctx = utils.FormattedDict({
-            'DOWNLOAD_URL': 'http://server/bins',
             'BUILD_DIR': '/usr/awesome',
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
             'COMPOSER_GITHUB_OAUTH_TOKEN': 'MADE_UP_TOKEN_VALUE',
-            'BP_DIR': ''
+            'BP_DIR': '',
+            'WEBDIR': ''
         })
 
         instance_stub = Dingus()
@@ -831,13 +722,13 @@ class TestComposer(object):
 
     def test_run_does_not_set_github_oauth_if_missing(self):
         ctx = utils.FormattedDict({
-            'DOWNLOAD_URL': 'http://server/bins',
             'BUILD_DIR': '/usr/awesome',
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
-            'BP_DIR': ''
+            'BP_DIR': '',
+            'WEBDIR': ''
         })
         instance_stub = Dingus()
         instance_stub._set_return_value("""{"rate": {"limit": 60, "remaining": 60}}""")
@@ -870,11 +761,13 @@ class TestComposer(object):
 
     def test_github_oauth_token_is_valid_uses_curl(self):
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': '/usr/awesome',
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
+            'WEBDIR': ''
         })
 
         instance_stub = Dingus()
@@ -903,11 +796,13 @@ class TestComposer(object):
 
     def test_github_oauth_token_is_valid_interprets_github_api_200_as_true(self):  # noqa
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': tempfile.gettempdir(),
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
+            'WEBDIR': ''
         })
 
         instance_stub = Dingus()
@@ -928,11 +823,13 @@ class TestComposer(object):
 
     def test_github_oauth_token_is_valid_interprets_github_api_401_as_false(self):  # noqa
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': tempfile.gettempdir(),
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
+            'WEBDIR': ''
         })
 
         instance_stub = Dingus()
@@ -958,7 +855,8 @@ class TestComposer(object):
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
-            'BP_DIR': ''
+            'BP_DIR': '',
+            'WEBDIR': ''
         })
 
         builder = Dingus(_ctx=ctx)
@@ -993,11 +891,13 @@ class TestComposer(object):
 
     def test_github_download_rate_not_exceeded(self):  # noqa
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': tempfile.gettempdir(),
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
+            'WEBDIR': ''
         })
 
         instance_stub = Dingus()
@@ -1018,11 +918,13 @@ class TestComposer(object):
 
     def test_github_download_rate_is_exceeded(self):  # noqa
         ctx = utils.FormattedDict({
+            'BP_DIR': '',
             'BUILD_DIR': tempfile.gettempdir(),
             'PHP_VM': 'php',
             'TMPDIR': tempfile.gettempdir(),
             'LIBDIR': 'lib',
             'CACHE_DIR': 'cache',
+            'WEBDIR': ''
         })
 
         instance_stub = Dingus()

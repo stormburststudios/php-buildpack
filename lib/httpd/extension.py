@@ -26,7 +26,10 @@ def service_commands(ctx):
             '$HOME/httpd/bin/apachectl',
             '-f "$HOME/httpd/conf/httpd.conf"',
             '-k start',
-            '-DFOREGROUND')
+            '-DFOREGROUND'),
+        'artisan': (
+            '$HOME/htdocs/artisan',
+            'queue:listen')
     }
 
 
@@ -43,7 +46,7 @@ def compile(install):
         .package('HTTPD')
         .config()
             .from_application('.bp-config/httpd')  # noqa
-            .or_from_build_pack('defaults/config/httpd/{HTTPD_VERSION}')
+            .or_from_build_pack('defaults/config/httpd')
             .to('httpd/conf')
             .rewrite()
             .done())
